@@ -1,3 +1,7 @@
+-- 01_schema_ddl.sql -- BiteStream, Project 1
+-- 4 tables, PK/FK and every CHECK constraint. Idempotent: drops before creating.
+-- Run first. Nothing else in sql/ works until this succeeds.
+
 \echo '=== 01_schema_ddl.sql : building relational schema ==='
 
 -- -------------------------------------------------------------------------------------
@@ -8,7 +12,7 @@ DROP TABLE IF EXISTS wallet_audit_logs  CASCADE;
 DROP TABLE IF EXISTS restaurants        CASCADE;
 DROP TABLE IF EXISTS users              CASCADE;
 
-## USERS TABLE
+-- users -- customers and their prepaid wallet
 CREATE TABLE users (
     id              BIGINT        GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     name            VARCHAR(120)  NOT NULL,
@@ -24,7 +28,7 @@ COMMENT ON TABLE  users                IS 'BiteStream customers and their prepai
 COMMENT ON COLUMN users.wallet_balance IS 'Exact decimal balance. CHECK >= 0 makes overdraft impossible at the storage layer.';
 
 
-##Wallet Audit Logs
+-- wallet_audit_logs -- append-only ledger, written only by the trigger
 CREATE TABLE wallet_audit_logs (
     id              BIGINT        GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     user_id         BIGINT        NOT NULL,
@@ -45,6 +49,7 @@ CREATE TABLE wallet_audit_logs (
     CONSTRAINT ck_audit_balance_after    CHECK (balance_after >= 0.00),
 
 
+    -- makes the DEBIT/CREDIT label impossible to falsify
     CONSTRAINT ck_audit_sign_matches_action CHECK (
         (action_type = 'CREDIT' AND amount_changed > 0) OR
         (action_type = 'DEBIT'  AND amount_changed < 0)
@@ -55,7 +60,7 @@ COMMENT ON TABLE  wallet_audit_logs               IS 'Append-only ledger. Writte
 COMMENT ON COLUMN wallet_audit_logs.amount_changed IS 'NEW.wallet_balance - OLD.wallet_balance. Signed: positive = CREDIT, negative = DEBIT.';
 COMMENT ON COLUMN wallet_audit_logs.balance_after  IS 'NEW.wallet_balance, i.e. the balance once the change had been applied.';
 
-##Restaruants
+-- restaurants -- vendors; lat/lon feed the MongoDB $geoNear search
 CREATE TABLE restaurants (
     id         BIGINT           GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     name       VARCHAR(160)     NOT NULL,
@@ -71,7 +76,7 @@ CREATE TABLE restaurants (
 
 COMMENT ON TABLE restaurants IS 'Vendor list. latitude/longitude are the origin for the MongoDB $geoNear driver search.';
 
-##Orders
+-- orders -- state machine: PREPARING -> DELIVERING -> DELIVERED
 CREATE TABLE orders (
     id            BIGINT        GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     user_id       BIGINT        NOT NULL,
@@ -86,6 +91,7 @@ CREATE TABLE orders (
 
     CONSTRAINT ck_orders_amount_positive CHECK (total_amount > 0),
     CONSTRAINT ck_orders_status          CHECK (status IN ('PREPARING','DELIVERING','DELIVERED')),
+    -- a row cannot claim DELIVERED without recording when
     CONSTRAINT ck_orders_delivered_has_timestamp
         CHECK (status <> 'DELIVERED' OR delivered_at IS NOT NULL),
     CONSTRAINT ck_orders_delivered_after_created
