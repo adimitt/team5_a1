@@ -11,12 +11,11 @@ PostgreSQL + MongoDB, implemented entirely at the database level.
 | **Project** | 1 — BiteStream (`project_no = (5 % 5) + 1 = 1`) |
 | **Members** | Aditya Mittal (2026201055) · Sourav Sahu (2026202001) · Dasari Abhaya Manasa (2026202014) · Gagandeep Singh (2026202008) |
 | **Repository** | https://github.com/adimitt/team5_a1 |
-| **Final commit** | `<HASH>` |
+| **Final commit** | `fd5acf472df0153a989473e56d6243738857c01a` |
 
-> A file cannot contain its own commit hash: writing the hash in changes the hash.
-> `<HASH>` above is the commit holding all 17 deliverables. The only commit after it is
-> the one that inserted this line, and that commit is the repository HEAD submitted to
-> Moodle. Either resolves to the complete project.
+> A file cannot contain its own commit hash, since writing the hash in changes the hash.
+> The commit above holds all 17 deliverables; the only commit after it is the one that
+> inserted this line. Both resolve to the complete project.
 
 ## 2. Environment
 
