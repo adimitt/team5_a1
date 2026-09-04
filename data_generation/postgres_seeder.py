@@ -1,43 +1,5 @@
 #!/usr/bin/env python3
-"""
-BiteStream :: postgres_seeder.py
-================================
-
-Generates the PostgreSQL stress-test dataset (>100k rows, default ~500k) and leaves the
-database in the exact state the performance capture expects.
-
-WHY EACH STEP IS WHERE IT IS
-----------------------------
- 1. seed the RNG              reproducible runs; the grader re-running this must get the
-                              same shape of data
- 2. disable the audit guards  wallet_audit_logs carries a BEFORE TRUNCATE trigger, so the
-                              reset cannot happen by accident. Disabling it is deliberate
-                              and requires table ownership - that is the point of the guard
- 3. TRUNCATE ... RESTART      resets identity sequences so ids are a predictable 1..N,
-    IDENTITY                  which lets steps 5-6 reference them without a round trip
- 4. DROP the analytics        loading into fewer indexes is several times faster, and the
-    indexes                   partial UNIQUE index would otherwise abort a COPY midway
- 5. COPY the bulk             streaming COPY, not 300k INSERTs: seconds instead of minutes
- 6. set-based UPDATEs         the ONLY way to fill wallet_audit_logs, because the trigger
-                              is AFTER UPDATE and COPY never fires it. See _seed_ledger()
- 7. re-create the indexes     by replaying sql/02_indexes.sql, so there is one definition
-                              of every index in the repo and no drift
- 8. VACUUM (ANALYZE)          without fresh statistics the planner guesses and picks Seq
-                              Scan; without VACUUM, Heap Fetches never reaches 0
- 9. exercise Workflow 1       a few hundred real sp_execute_checkout calls, success and
-                              failure, so the procedure is proven at scale and not just
-                              in a unit test
-10. refresh the MV            so mv_restaurant_performance is populated for the demo
-
-USAGE
-    python3 data_generation/postgres_seeder.py                 # full dataset
-    python3 data_generation/postgres_seeder.py --scale 0.05    # 5% for a quick smoke test
-    python3 data_generation/postgres_seeder.py --skip-checkouts
-
-CONNECTION
-    Standard libpq environment variables, with localhost defaults:
-        PGHOST PGPORT PGDATABASE PGUSER PGPASSWORD
-"""
+"""Seeds the BiteStream PostgreSQL database: 300k orders and 150k trigger-written ledger rows."""
 
 from __future__ import annotations
 
@@ -54,17 +16,13 @@ from decimal import Decimal
 import psycopg
 from faker import Faker
 
-# --------------------------------------------------------------------------------------
-# Determinism. Both generators are seeded so that two runs produce identical data.
-# --------------------------------------------------------------------------------------
+# Seeded so two runs produce identical data.
 SEED = 42
 random.seed(SEED)
 Faker.seed(SEED)
 fake = Faker("en_IN")
 
-# --------------------------------------------------------------------------------------
-# Volumes. Comfortably clears the brief's "100k+ rows" for both orders and the ledger.
-# --------------------------------------------------------------------------------------
+# Volumes. Clears the brief's 100k+ rows for both orders and the ledger.
 N_RESTAURANTS = 1_000
 N_USERS = 50_000
 N_ORDERS = 300_000
@@ -72,17 +30,14 @@ N_ACTIVE_ORDERS = 6_000          # users holding one live PREPARING/DELIVERING o
 N_CHECKOUT_CALLS = 300           # real sp_execute_checkout invocations
 HISTORY_DAYS = 540               # orders spread over ~18 months
 
-# Ledger passes. Each is ONE set-based UPDATE that the row trigger turns into N_USERS
-# audit rows. Amounts are chosen so no balance can ever go negative (a CHECK violation
-# would abort the whole statement).
+# Each pass is ONE set-based UPDATE that the row trigger turns into N_USERS audit rows.
 LEDGER_PASSES = [
     ("welcome top-up", 500.00),
     ("first order settlement", -137.50),
     ("cashback", 89.25),
 ]
 
-# Eight Indian metros. Restaurants cluster around these, and mongo_seeder.py reads the
-# resulting coordinates back out of Postgres so DriverPings land within $geoNear range.
+# Restaurants cluster around these; mongo_seeder.py reads the coordinates back out of Postgres.
 CITIES = [
     ("Hyderabad", 17.3850, 78.4867),
     ("Bengaluru", 12.9716, 77.5946),
@@ -116,20 +71,14 @@ def log(msg: str) -> None:
 
 
 # ======================================================================================
-# Step 2-4 : reset
-# ======================================================================================
 def reset(conn: psycopg.Connection) -> None:
     """Empty every table and drop the analytics indexes ready for a fast bulk load."""
     with conn.cursor() as cur:
         # wallet_audit_logs has a BEFORE TRUNCATE guard (03_triggers_and_audit.sql).
-        # Disabling it is a deliberate, ownership-requiring act - exactly the property the
-        # guard is there to provide. It is re-enabled immediately afterwards.
         log("disabling audit immutability guards for the reset")
         cur.execute("ALTER TABLE wallet_audit_logs DISABLE TRIGGER USER")
 
         # checkout_attempts is created by sql/04_stored_procedures.sql, which may not have
-        # run yet if someone is executing the files one at a time. Truncate only what
-        # actually exists, so the seeder never depends on a later file.
         cur.execute("SELECT to_regclass('public.checkout_attempts') IS NOT NULL")
         has_attempts = cur.fetchone()[0]
         targets = "orders, wallet_audit_logs, users, restaurants"
@@ -142,8 +91,7 @@ def reset(conn: psycopg.Connection) -> None:
         cur.execute("ALTER TABLE wallet_audit_logs ENABLE TRIGGER USER")
         log("audit immutability guards re-enabled")
 
-        # Drop the analytics indexes. PK / FK / unique constraints stay: they are needed
-        # for referential integrity during the load.
+        # Drop the analytics indexes.
         log("dropping analytics indexes for the duration of the load")
         for ix in (
             "idx_active_user_order",
@@ -158,8 +106,6 @@ def reset(conn: psycopg.Connection) -> None:
 
 
 # ======================================================================================
-# Step 5 : bulk load
-# ======================================================================================
 def seed_restaurants(conn: psycopg.Connection, n: int) -> list[tuple[float, float]]:
     """COPY n restaurants clustered around the eight metros. Returns their coordinates."""
     log(f"COPY {n:,} restaurants")
@@ -169,9 +115,7 @@ def seed_restaurants(conn: psycopg.Connection, n: int) -> list[tuple[float, floa
     ) as cp:
         for i in range(n):
             city, clat, clng = CITIES[i % len(CITIES)]
-            # +/- ~0.08 deg is roughly a 9 km city spread. Longitude degrees shrink as
-            # latitude rises, so divide by cos(lat) to keep the cluster circular on the
-            # ground rather than an ellipse.
+            # +/- ~0.08 deg is roughly a 9 km city spread.
             lat = clat + random.gauss(0, 0.05)
             lng = clng + random.gauss(0, 0.05) / math.cos(math.radians(clat))
             lat = max(-90.0, min(90.0, lat))     # honour ck_rest_latitude
@@ -197,21 +141,7 @@ def seed_users(conn: psycopg.Connection, n: int) -> None:
 
 
 def build_orders(n_orders: int, n_users: int, n_restaurants: int, n_active: int):
-    """
-    Generate the order rows in memory, then satisfy the partial unique index.
-
-    THE CONSTRAINT THAT SHAPES THIS FUNCTION
-        idx_active_user_order is UNIQUE ON orders(user_id) WHERE status IN
-        ('PREPARING','DELIVERING'). Assigning statuses at random would put two live orders
-        on some user and abort the COPY partway through, leaving a half-loaded table.
-
-    THE STRATEGY
-        1. every order starts as DELIVERED, with a delivered_at
-        2. sample n_active DISTINCT users that actually placed at least one order
-        3. flip exactly ONE order per sampled user to PREPARING or DELIVERING, and clear
-           its delivered_at (ck_orders_delivered_has_timestamp only constrains DELIVERED)
-        4. assert the active user ids are unique before returning
-    """
+    """Generate order rows; at most one active order per user, or the partial unique index aborts the COPY."""
     now = datetime.now(timezone.utc)
     rows: list[list] = []
     by_user: dict[int, list[int]] = {}
@@ -237,8 +167,7 @@ def build_orders(n_orders: int, n_users: int, n_restaurants: int, n_active: int)
         idx = random.choice(by_user[user_id])
         rows[idx][3] = random.choice(["PREPARING", "DELIVERING"])
         rows[idx][5] = None                                   # no delivered_at yet
-        # A live order is a recent one; keep it inside the last two hours so it lines up
-        # with the DriverPings TTL window on the MongoDB side.
+        # A live order is a recent one;
         recent = now - timedelta(minutes=random.uniform(1, 110))
         rows[idx][4] = recent
 
@@ -259,29 +188,8 @@ def seed_orders(conn: psycopg.Connection, rows: list[list]) -> None:
 
 
 # ======================================================================================
-# Step 6 : the ledger  -- the subtle part of this file
-# ======================================================================================
 def seed_ledger(conn: psycopg.Connection) -> None:
-    """
-    Fill wallet_audit_logs to >100k rows using ONLY the trigger.
-
-    WHY NOT JUST COPY INTO wallet_audit_logs
-        Because then no row would have come from trg_wallet_audit, and the claim that the
-        ledger is trigger-maintained would be false. An examiner can check: every id is
-        contiguous and every row's balance_after reconciles with users.wallet_balance.
-
-    WHY NOT LOOP 150k SINGLE-ROW UPDATES
-        Correct, but slow.
-
-    THE INSIGHT
-        A row-level trigger fires once per AFFECTED ROW, even for a single set-based
-        statement. One UPDATE touching 50,000 users therefore produces 50,000 audit rows
-        in one statement. Three passes gives 150,000 rows in a few seconds, all of them
-        genuinely trigger-generated.
-
-    The amounts are chosen so the running balance can never go negative; a single
-    ck_users_wallet_non_negative violation would abort the entire statement.
-    """
+    """Fill the ledger to >100k rows using ONLY the trigger: one set-based UPDATE fires it once per row."""
     with conn.cursor() as cur:
         for label, amount in LEDGER_PASSES:
             t0 = time.perf_counter()
@@ -293,14 +201,8 @@ def seed_ledger(conn: psycopg.Connection) -> None:
 
 
 # ======================================================================================
-# Step 7-8 : indexes and statistics
-# ======================================================================================
 def recreate_indexes(conn: psycopg.Connection) -> None:
-    """
-    Replay sql/02_indexes.sql so index definitions live in exactly one place.
-    psql meta-commands (lines beginning with a backslash) are stripped, since psycopg
-    speaks the wire protocol and does not understand them.
-    """
+    """Replay sql/02_indexes.sql so index definitions live in one place (psql meta-commands stripped)."""
     log("re-creating indexes by replaying sql/02_indexes.sql")
     sql = "\n".join(
         line for line in INDEX_FILE.read_text().splitlines()
@@ -314,19 +216,7 @@ def recreate_indexes(conn: psycopg.Connection) -> None:
 
 
 def analyze(conn: psycopg.Connection) -> None:
-    """
-    VACUUM (ANALYZE) - the single most important line in this file for the performance
-    section.
-
-      ANALYZE  refreshes planner statistics. On a freshly loaded table with no stats the
-               planner guesses, and its guesses lead it straight to a Seq Scan. This is
-               the number one cause of "why is my index not being used?".
-      VACUUM   sets the visibility map, which is what allows an Index Only Scan to report
-               Heap Fetches: 0. Without it the scan still runs but must visit the heap for
-               every row to check visibility, and the plan looks far weaker than it is.
-
-    VACUUM cannot run inside a transaction block, hence autocommit.
-    """
+    """VACUUM (ANALYZE): without stats the planner picks Seq Scan; without VACUUM, Heap Fetches never hits 0."""
     log("VACUUM (ANALYZE) - required before any EXPLAIN is captured")
     conn.autocommit = True
     with conn.cursor() as cur:
@@ -338,17 +228,9 @@ def analyze(conn: psycopg.Connection) -> None:
 
 
 # ======================================================================================
-# Step 9-10 : exercise Workflow 1, then refresh the MV
-# ======================================================================================
 def exercise_checkouts(conn: psycopg.Connection, n_calls: int,
                        n_users: int, n_restaurants: int) -> dict[str, int]:
-    """
-    Drive sp_execute_checkout down every branch, for real, at the end of the load.
-
-    sp_execute_checkout performs its own COMMIT/ROLLBACK, so it must be CALLed on an
-    AUTOCOMMIT connection - a CALL nested inside a client-side BEGIN raises 2D000
-    'invalid transaction termination'.
-    """
+    """Drive sp_execute_checkout down every branch. Needs autocommit -- it controls its own transaction."""
     outcomes: dict[str, int] = {}
     conn.autocommit = True
     with conn.cursor() as cur:
@@ -367,10 +249,7 @@ def exercise_checkouts(conn: psycopg.Connection, n_calls: int,
             else:
                 amount = round(random.uniform(99, 900), 2)
 
-            # Explicit casts matter: psycopg infers the NARROWEST type that fits, so a
-            # small Python int arrives as smallint and a float as double precision, and
-            # PostgreSQL then finds no procedure with that signature. Casting pins the
-            # call to sp_execute_checkout(BIGINT, BIGINT, NUMERIC, BIGINT, TEXT).
+            # Explicit casts matter:
             cur.execute(
                 "CALL sp_execute_checkout("
                 "  %s::bigint, %s::bigint, %s::numeric(10,2), NULL::bigint, NULL::text)",
@@ -384,16 +263,7 @@ def exercise_checkouts(conn: psycopg.Connection, n_calls: int,
 
 
 def refresh_mv(conn: psycopg.Connection) -> None:
-    """
-    Refresh the materialized view, IF it exists.
-
-    sql/01_schema_ddl.sql drops the four base tables with CASCADE, which also drops
-    mv_restaurant_performance along with them. When the project is built in file order
-    (01 -> 03 -> 04 -> seeder -> 02 -> 05) the view therefore does not exist yet at this
-    point, and sql/05_materialized_views.sql will create it WITH DATA a moment later.
-    Skipping is correct; failing here would make the seeder depend on a file that runs
-    after it.
-    """
+    """Refresh the materialized view if it exists; sql/05 creates it WITH DATA if it does not yet."""
     conn.autocommit = True
     with conn.cursor() as cur:
         cur.execute("SELECT to_regclass('public.mv_restaurant_performance') IS NOT NULL")
