@@ -13,10 +13,6 @@ PostgreSQL + MongoDB, implemented entirely at the database level.
 | **Repository** | https://github.com/adimitt/team5_a1 |
 | **Final commit** | `fd5acf472df0153a989473e56d6243738857c01a` |
 
-> A file cannot contain its own commit hash, since writing the hash in changes the hash.
-> The commit above holds all 17 deliverables; the only commit after it is the one that
-> inserted this line. Both resolve to the complete project.
-
 ## 2. Environment
 
 PostgreSQL 17.11 · MongoDB 8.3.7 · Python 3.13
@@ -53,6 +49,15 @@ psql -c "CALL sp_execute_checkout(1, 1, 250.00, NULL, NULL);"   # Workflow 1
 `02` after the seeder — loading into six indexes is far slower, and the partial unique index aborts the COPY midway.
 `VACUUM (ANALYZE)` runs last inside the seeder; without it the planner picks Seq Scan.
 
+**Why `mongo/01_collections_and_indexes.js` and `mongo_seeder.py` both create collections
+and indexes.** `01` is the declarative setup script: it applies the `$jsonSchema` validators,
+builds the 2dsphere and TTL indexes, and asserts all four before exiting. The seeder repeats
+that work so it is self-contained and safe to re-run alone — which matters because the 2-hour
+TTL drains `DriverPings` continuously, so it must be re-run before any demo. Neither holds a
+second copy of a definition: **both read `docs/mongo_schema_map.json`**, the single source of
+truth for every validator and index. `01` alone gives an empty, correctly-indexed database;
+the seeder alone gives the same schema plus data.
+
 ## 4. Assumptions
 
 1. **BIGINT IDENTITY keys, not UUID.** The brief allows either. Random UUIDv4 destroys B-tree insert locality and widens every FK from 8 to 16 bytes.
@@ -87,7 +92,7 @@ Raw logs: `performance/postgres_explain_analyzes.txt`, `performance/mongo_execut
 | **Materialized view** leaderboard | Seq Scan on 294,015 orders, 89.653 ms | Index Scan, **0.034 ms** | 2,600× |
 | **Partial unique index** lookup | — | Index Scan, **0.011 ms** | — |
 | **WF3** `$geoNear` 5 km | COLLSCAN, 520,000 docs, 244 ms | GEO_NEAR_2DSPHERE, **44,618 docs**, 91 ms | 11.7× fewer docs |
-| **WF4** `$facet` | COLLSCAN, 200,000 docs, 49 ms | IXSCAN, **220 docs**, 1 ms | 909× fewer docs |
+| **WF4** — the `$match` feeding `$facet` | COLLSCAN, 200,000 docs, 49 ms | IXSCAN, **220 docs**, 1 ms | 909× fewer docs |
 
 ### Workflow 2 — Index Only Scan with an Index Cond
 
@@ -117,14 +122,16 @@ totalDocsExamined: 44,618   of 520,000      executionTimeMillis: 91
 `$geoNear` cannot run at all without the index — MongoDB rejects the pipeline:
 `"$geoNear requires a 2d or 2dsphere index, but none were found"`.
 
-### Workflow 4 — `IXSCAN`, and the anti-pattern measured
+### Workflow 4 — the `$match` before `$facet` uses the index
 
 ```
 $match before $facet   IXSCAN ix_reviews_restaurant_recent      220 docs      1 ms
 $match inside $facet   COLLSCAN                             200,000 docs    230 ms
 ```
 
-`$facet` sub-pipelines cannot use indexes — only the stage immediately before `$facet` can. Moving the filter one stage inwards costs **909× the documents examined**.
+`$facet` itself never uses an index — the `IXSCAN` above belongs to the `$match` that feeds
+it. Its sub-pipelines cannot use indexes at all; only the stage immediately before `$facet`
+can. Moving the filter one stage inwards costs **909× the documents examined**.
 
 ## 7. Repository contents
 
