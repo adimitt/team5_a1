@@ -8,10 +8,10 @@ PostgreSQL + MongoDB, implemented entirely at the database level.
 | | |
 |---|---|
 | **Team** | 5 |
-| **Project** | 1 — BiteStream (`project_no = (5 % 5) + 1 = 1`) |
+| **Project** | 1 — BiteStream
 | **Members** | Aditya Mittal (2026201055) · Sourav Sahu (2026202001) · Dasari Abhaya Manasa (2026202014) · Gagandeep Singh (2026202008) |
 | **Repository** | https://github.com/adimitt/team5_a1 |
-| **Final commit** | `fd5acf472df0153a989473e56d6243738857c01a` |
+| **Final commit** | `3f498f9836925db3467fb2949cc39961ae755a90` |
 
 ## 2. Environment
 
