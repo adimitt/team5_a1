@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BiteStream · Assignment 1B</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark">B</span><div><strong>BiteStream</strong><small>Food delivery operations</small></div></div>
+      <div class="actor">
+        <label>Current actor</label>
+        <select id="actorSelect"><option>Loading…</option></select>
+      </div>
+    </header>
+
+    <div class="shell">
+      <aside class="sidebar">
+        <nav id="nav">
+          <button data-page="dashboard" class="active">Overview</button>
+          <button data-page="browse">Browse</button>
+          <button data-page="transaction">Checkout</button>
+          <button data-page="audit">Wallet audit</button>
+          <button data-page="analytics">Analytics</button>
+          <button data-page="map">Live map</button>
+          <button data-page="reviews">Reviews</button>
+        </nav>
+        
+      </aside>
+
+      <main id="main"></main>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
